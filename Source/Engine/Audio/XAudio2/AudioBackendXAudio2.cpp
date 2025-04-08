@@ -1,4 +1,5 @@
 // Copyright (c) 2012-2024 Wojciech Figat. All rights reserved.
+// Copyright (c) 2025 Robert Valentine. All rights reserved.
 
 #if AUDIO_API_XAUDIO2
 
@@ -184,6 +185,24 @@ namespace XAudio2
             buffer.PlayLength = (buffer.AudioBytes / bytesPerSample) - buffer.PlayBegin;
             aSource->LastBufferStartTime = aSource->StartTimeForQueueBuffer;
             aSource->StartTimeForQueueBuffer = 0;
+        }
+
+        // Apply DSP processing if this is a float buffer
+        if (aBuffer->Info.BitDepth == 32)
+        {
+            // Process buffer through DSP system
+            float* audioData = (float*)buffer.pAudioData;
+            int32 sampleCount = buffer.AudioBytes / sizeof(float) / aBuffer->Info.NumChannels;
+
+            // Call AudioHook to intercept and process the buffer
+            // This will route through the AudioInterceptor and apply DSP effects
+            AudioHook::OnBufferSubmit(
+                audioData,
+                sampleCount,
+                aBuffer->Info.NumChannels,
+                aBuffer->Info.SampleRate,
+                aSource->Callback.SourceID
+            );
         }
 
         const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);

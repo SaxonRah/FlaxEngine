@@ -1,18 +1,27 @@
 // Copyright (c) 2012-2024 Wojciech Figat. All rights reserved.
+// Copyright (c) 2025 Robert Valentine. All rights reserved.
 
 #pragma once
 
 #include "Engine/Level/Actor.h"
 #include "Engine/Content/AssetReference.h"
 #include "AudioClip.h"
+#include "AudioDSPSystem.h"
+#include "AudioDSPChain.h"
+#include "AudioDSPEffect.h"
+#include "AudioDSPReverb.h"
+#include "AudioDSPLowPass.h"
+#include "AudioDSPHighPass.h"
+#include "AudioDSPConvolution.h"
 
 /// <summary>
 /// Represents a source for emitting audio. Audio can be played spatially (gun shot), or normally (music). Each audio source must have an AudioClip to play - back, and it can also have a position in the case of spatial (3D) audio.
+/// This enhanced version includes DSP processing capabilities.
 /// </summary>
 /// <remarks>
 /// Whether or not an audio source is spatial is controlled by the assigned AudioClip.The volume and the pitch of a spatial audio source is controlled by its position and the AudioListener's position/direction/velocity.
 /// </remarks>
-API_CLASS(Attributes="ActorContextMenu(\"New/Audio/Audio Source\"), ActorToolbox(\"Other\")")
+API_CLASS(Attributes = "ActorContextMenu(\"New/Audio/Audio Source\"), ActorToolbox(\"Other\")")
 class FLAXENGINE_API AudioSource : public Actor
 {
     DECLARE_SCENE_OBJECT(AudioSource);
@@ -64,6 +73,10 @@ private:
     float _savedTime = 0;
     int32 _streamingFirstChunk = 0;
 
+    // DSP specific fields
+    AudioDSPChain* _dspChain = nullptr;
+    bool _initialized = false;
+
 public:
     /// <summary>
     /// The internal ID of this audio source used by the audio backend. Empty if 0.
@@ -73,8 +86,69 @@ public:
     /// <summary>
     /// The audio clip asset used as a source of the sound.
     /// </summary>
-    API_FIELD(Attributes="EditorOrder(10), DefaultValue(null), EditorDisplay(\"Audio Source\")")
-    AssetReference<AudioClip> Clip;
+    API_FIELD(Attributes = "EditorOrder(10), DefaultValue(null), EditorDisplay(\"Audio Source\")")
+        AssetReference<AudioClip> Clip;
+
+    // DSP-specific parameters
+
+    /// <summary>
+    /// The reverb mix amount.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(100), DefaultValue(0.0f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float ReverbMix = 0.0f;
+
+    /// <summary>
+    /// The reverb room size.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(110), DefaultValue(0.5f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float ReverbRoomSize = 0.5f;
+
+    /// <summary>
+    /// The reverb damping.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(120), DefaultValue(0.5f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float ReverbDamping = 0.5f;
+
+    /// <summary>
+    /// The low-pass filter amount.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(130), DefaultValue(0.0f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float LowPassAmount = 0.0f;
+
+    /// <summary>
+    /// The low-pass filter cutoff frequency.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(140), DefaultValue(1000.0f), Limit(20, 20000, 100.0f), EditorDisplay(\"DSP Effects\")")
+        float LowPassFrequency = 1000.0f;
+
+    /// <summary>
+    /// The high-pass filter amount.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(150), DefaultValue(0.0f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float HighPassAmount = 0.0f;
+
+    /// <summary>
+    /// The high-pass filter cutoff frequency.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(160), DefaultValue(200.0f), Limit(20, 20000, 100.0f), EditorDisplay(\"DSP Effects\")")
+        float HighPassFrequency = 200.0f;
+
+    /// <summary>
+    /// The convolution impulse response.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(170), EditorDisplay(\"DSP Effects\")")
+        Array<float> ImpulseResponse;
+
+    /// <summary>
+    /// The convolution mix amount.
+    /// </summary>
+    API_FIELD(Attributes = "EditorOrder(180), DefaultValue(0.0f), Limit(0, 1, 0.01f), EditorDisplay(\"DSP Effects\")")
+        float ConvolutionMix = 0.0f;
+
+    /// <summary>
+    /// Finalizes an instance of the <see cref="AudioSource"/> class.
+    /// </summary>
+    ~AudioSource();
 
     /// <summary>
     /// Gets the velocity of the source. Determines pitch in relation to AudioListener's position. Only relevant for spatial (3D) sources.
@@ -87,8 +161,8 @@ public:
     /// <summary>
     /// Gets the volume of the audio played from this source, in [0, 1] range.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(20), DefaultValue(1.0f), Limit(0, 1, 0.01f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetVolume() const
+    API_PROPERTY(Attributes = "EditorOrder(20), DefaultValue(1.0f), Limit(0, 1, 0.01f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetVolume() const
     {
         return _volume;
     }
@@ -101,8 +175,8 @@ public:
     /// <summary>
     /// Gets the pitch of the played audio. The default is 1.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(30), DefaultValue(1.0f), Limit(0.5f, 2.0f, 0.01f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetPitch() const
+    API_PROPERTY(Attributes = "EditorOrder(30), DefaultValue(1.0f), Limit(0.5f, 2.0f, 0.01f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetPitch() const
     {
         return _pitch;
     }
@@ -115,8 +189,8 @@ public:
     /// <summary>
     /// Gets the stereo pan of the played audio (-1 is left speaker, 1 is right speaker, 0 is balanced). The default is 1. Used by non-spatial audio only.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(30), DefaultValue(0.0f), Limit(-1.0f, 1.0f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetPan() const
+    API_PROPERTY(Attributes = "EditorOrder(30), DefaultValue(0.0f), Limit(-1.0f, 1.0f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetPan() const
     {
         return _pan;
     }
@@ -129,8 +203,8 @@ public:
     /// <summary>
     /// Determines whether the audio clip should loop when it finishes playing.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(40), DefaultValue(false), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE bool GetIsLooping() const
+    API_PROPERTY(Attributes = "EditorOrder(40), DefaultValue(false), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE bool GetIsLooping() const
     {
         return _loop;
     }
@@ -143,8 +217,8 @@ public:
     /// <summary>
     /// Determines whether the audio clip should autoplay on level start.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(50), DefaultValue(false), EditorDisplay(\"Audio Source\", \"Play On Start\")")
-    FORCE_INLINE bool GetPlayOnStart() const
+    API_PROPERTY(Attributes = "EditorOrder(50), DefaultValue(false), EditorDisplay(\"Audio Source\", \"Play On Start\")")
+        FORCE_INLINE bool GetPlayOnStart() const
     {
         return _playOnStart;
     }
@@ -153,7 +227,7 @@ public:
     /// Determines the time (in seconds) at which the audio clip starts playing if Play On Start is enabled.
     /// </summary>
     API_PROPERTY(Attributes = "EditorOrder(51), DefaultValue(0.0f), Limit(0, float.MaxValue, 0.01f), EditorDisplay(\"Audio Source\", \"Start Time\"), VisibleIf(nameof(PlayOnStart))")
-    FORCE_INLINE float GetStartTime() const
+        FORCE_INLINE float GetStartTime() const
     {
         return _startTime;
     }
@@ -171,8 +245,8 @@ public:
     /// <summary>
     /// Gets the minimum distance at which audio attenuation starts. When the listener is closer to the source than this value, audio is heard at full volume. Once farther away the audio starts attenuating.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(60), DefaultValue(1000.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetMinDistance() const
+    API_PROPERTY(Attributes = "EditorOrder(60), DefaultValue(1000.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetMinDistance() const
     {
         return _minDistance;
     }
@@ -185,8 +259,8 @@ public:
     /// <summary>
     /// Gets the attenuation that controls how quickly does audio volume drop off as the listener moves further from the source.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(70), DefaultValue(1.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetAttenuation() const
+    API_PROPERTY(Attributes = "EditorOrder(70), DefaultValue(1.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetAttenuation() const
     {
         return _attenuation;
     }
@@ -199,8 +273,8 @@ public:
     /// <summary>
     /// Gets the doppler effect factor. Scale for source velocity. Default is 1.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(75), DefaultValue(1.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE float GetDopplerFactor() const
+    API_PROPERTY(Attributes = "EditorOrder(75), DefaultValue(1.0f), Limit(0, float.MaxValue, 0.1f), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE float GetDopplerFactor() const
     {
         return _dopplerFactor;
     }
@@ -213,8 +287,8 @@ public:
     /// <summary>
     /// If checked, source can play spatial 3d audio (when audio clip supports it), otherwise will always play as 2d sound.
     /// </summary>
-    API_PROPERTY(Attributes="EditorOrder(80), DefaultValue(true), EditorDisplay(\"Audio Source\")")
-    FORCE_INLINE bool GetAllowSpatialization() const
+    API_PROPERTY(Attributes = "EditorOrder(80), DefaultValue(true), EditorDisplay(\"Audio Source\")")
+        FORCE_INLINE bool GetAllowSpatialization() const
     {
         return _allowSpatialization;
     }
@@ -224,7 +298,14 @@ public:
     /// </summary>
     API_PROPERTY() void SetAllowSpatialization(bool value);
 
-public:
+    /// <summary>
+    /// Gets the DSP chain for this audio source.
+    /// </summary>
+    API_PROPERTY() FORCE_INLINE AudioDSPChain* GetDSPChain() const
+    {
+        return _dspChain;
+    }
+
     /// <summary>
     /// Starts playing the currently assigned audio clip.
     /// </summary>
@@ -251,7 +332,7 @@ public:
     /// <summary>
     /// Gets the current time of playback. If playback has not yet started, it specifies the time at which playback will start at. The time is in seconds, in range [0, ClipLength].
     /// </summary>
-    API_PROPERTY(Attributes="HideInEditor") float GetTime() const;
+    API_PROPERTY(Attributes = "HideInEditor") float GetTime() const;
 
     /// <summary>
     /// Sets the current time of playback. If playback has not yet started, it specifies the time at which playback will start at. The time is in seconds, in range [0, ClipLength].
@@ -264,12 +345,6 @@ public:
     /// </summary>
     API_PROPERTY() bool Is3D() const;
 
-    /// <summary>
-    /// Returns true if audio clip is valid, loaded and uses dynamic data streaming.
-    /// </summary>
-    API_PROPERTY() bool UseStreaming() const;
-
-public:
     /// <summary>
     /// Determines whether this audio source started playing audio via audio backend. After audio play it may wait for audio clip data to be loaded or streamed.
     /// [Deprecated in v1.9]
@@ -288,19 +363,46 @@ public:
     }
 
     /// <summary>
-    /// Requests the audio streaming buffers update. Rises tha flag to synchronize audio backend buffers of the emitter during next game logic update.
+    /// Returns true if audio clip is valid, loaded and uses dynamic data streaming.
+    /// </summary>
+    API_PROPERTY() bool UseStreaming() const;
+
+    /// <summary>
+    /// Sets the impulse response for the convolution effect.
+    /// </summary>
+    /// <param name="ir">The impulse response.</param>
+    API_FUNCTION() void SetImpulseResponse(const Array<float>& ir);
+
+    /// <summary>
+    /// Updates the DSP effects based on the current parameters.
+    /// </summary>
+    API_FUNCTION() void UpdateEffects();
+
+    /// <summary>
+    /// Requests the audio streaming buffers update. Rises the flag to synchronize audio backend buffers of the emitter during next game logic update.
     /// </summary>
     void RequestStreamingBuffersUpdate();
+
+    // Adds or updates a reverb effect to this audio source
+    API_FUNCTION() void SetReverbEffect(float mix, float roomSize, float damping);
+
+    // Adds or updates a low-pass filter effect to this audio source
+    API_FUNCTION() void SetLowPassFilter(float cutoffFrequency, bool enabled);
+
+    // Adds or updates a high-pass filter effect to this audio source
+    API_FUNCTION() void SetHighPassFilter(float cutoffFrequency, bool enabled);
+
+    // Sets the impulse response for convolution effect
+    API_FUNCTION() void SetConvolutionImpulseResponse(const Array<float>& impulseResponse, float mix);
+
+    // Clears all audio effects
+    API_FUNCTION() void ClearAudioEffects();
 
 private:
     void OnClipChanged();
     void OnClipLoaded();
-
-    /// <summary>
-    /// Plays the audio source. Should have buffer(s) binded before.
-    /// </summary>
+    void InitializeEffects();
     void PlayInternal();
-
     void Update();
 
 public:

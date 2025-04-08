@@ -1,4 +1,5 @@
 // Copyright (c) 2012-2024 Wojciech Figat. All rights reserved.
+// Copyright (c) 2025 Robert Valentine. All rights reserved.
 
 #include "AudioSource.h"
 #include "Engine/Core/Log.h"
@@ -24,6 +25,16 @@ AudioSource::AudioSource(const SpawnParams& params)
 {
     Clip.Changed.Bind<AudioSource, &AudioSource::OnClipChanged>(this);
     Clip.Loaded.Bind<AudioSource, &AudioSource::OnClipLoaded>(this);
+}
+
+AudioSource::~AudioSource()
+{
+    // Clean up DSP chain
+    if (_dspChain)
+    {
+        AudioDSPSystem::RemoveSourceDSP(this);
+        _dspChain = nullptr;
+    }
 }
 
 void AudioSource::SetVolume(float value)
@@ -116,6 +127,54 @@ void AudioSource::SetAllowSpatialization(bool value)
         AudioBackend::Source::SpatialSetupChanged(SourceID, Is3D(), _attenuation, _minDistance, _dopplerFactor);
 }
 
+void AudioSource::UpdateEffects()
+{
+    if (!_dspChain)
+        return;
+
+    // Update reverb effect
+    AudioDSPEffect* reverbEffect = _dspChain->GetEffectByType(AudioDSPEffect::EffectType::Reverb);
+    if (reverbEffect)
+    {
+        AudioDSPReverb* reverb = static_cast<AudioDSPReverb*>(reverbEffect);
+        reverb->SetEnabled(ReverbMix > 0.01f);
+        reverb->SetWetLevel(ReverbMix);
+        reverb->SetDryLevel(1.0f - ReverbMix * 0.5f);
+        reverb->SetRoomSize(ReverbRoomSize);
+        reverb->SetDamping(ReverbDamping);
+    }
+
+    // Update low-pass filter
+    AudioDSPEffect* lowPassEffect = _dspChain->GetEffectByType(AudioDSPEffect::EffectType::LowPass);
+    if (lowPassEffect)
+    {
+        AudioDSPLowPass* lowPass = static_cast<AudioDSPLowPass*>(lowPassEffect);
+        lowPass->SetEnabled(LowPassAmount > 0.01f);
+        lowPass->SetCutoffFrequency(LowPassFrequency);
+        lowPass->SetResonance(0.707f);
+    }
+
+    // Update high-pass filter
+    AudioDSPEffect* highPassEffect = _dspChain->GetEffectByType(AudioDSPEffect::EffectType::HighPass);
+    if (highPassEffect)
+    {
+        AudioDSPHighPass* highPass = static_cast<AudioDSPHighPass*>(highPassEffect);
+        highPass->SetEnabled(HighPassAmount > 0.01f);
+        highPass->SetCutoffFrequency(HighPassFrequency);
+        highPass->SetResonance(0.707f);
+    }
+
+    // Update convolution effect
+    AudioDSPEffect* convolutionEffect = _dspChain->GetEffectByType(AudioDSPEffect::EffectType::Convolution);
+    if (convolutionEffect)
+    {
+        AudioDSPConvolution* convolution = static_cast<AudioDSPConvolution*>(convolutionEffect);
+        convolution->SetEnabled(ConvolutionMix > 0.01f && !ImpulseResponse.IsEmpty());
+        convolution->SetWetLevel(ConvolutionMix);
+        convolution->SetDryLevel(1.0f - ConvolutionMix * 0.5f);
+    }
+}
+
 void AudioSource::Play()
 {
     auto state = _state;
@@ -135,6 +194,16 @@ void AudioSource::Play()
         {
             LOG(Warning, "Cannot create audio source ({0})", GetNamePath());
             return;
+        }
+
+        // Initialize DSP chain if it doesn't exist yet
+        if (!_dspChain)
+        {
+            _dspChain = AudioDSPSystem::GetSourceDSP(this);
+            if (_dspChain && !_initialized)
+            {
+                InitializeEffects();
+            }
         }
     }
 
@@ -167,8 +236,8 @@ void AudioSource::Play()
     }
     else
     {
-        // Source was nt properly added to the Audio Backend
-        LOG(Warning, "Cannot play unitialized audio source.");
+        // Source was not properly added to the Audio Backend
+        LOG(Warning, "Cannot play uninitialized audio source.");
     }
 }
 
@@ -259,9 +328,11 @@ bool AudioSource::Is3D() const
     return _allowSpatialization && Clip->Is3D();
 }
 
-void AudioSource::RequestStreamingBuffersUpdate()
+bool AudioSource::UseStreaming() const
 {
-    _needToUpdateStreamingBuffers = true;
+    if (Clip == nullptr || Clip->WaitForLoaded())
+        return false;
+    return Clip->IsStreamable();
 }
 
 void AudioSource::OnClipChanged()
@@ -292,6 +363,9 @@ void AudioSource::OnClipLoaded()
         {
             // Request faster streaming update
             Clip->RequestStreamingUpdate();
+
+            // Request streaming buffers update
+            RequestStreamingBuffersUpdate();
         }
         else
         {
@@ -300,13 +374,56 @@ void AudioSource::OnClipLoaded()
             PlayInternal();
         }
     }
+
+    // Make sure DSP chain is set up correctly
+    if (!_dspChain)
+    {
+        _dspChain = AudioDSPSystem::GetSourceDSP(this);
+        if (_dspChain && !_initialized)
+        {
+            InitializeEffects();
+        }
+    }
+
+    // Update DSP effects based on current parameters
+    UpdateEffects();
 }
 
-bool AudioSource::UseStreaming() const
+void AudioSource::InitializeEffects()
 {
-    if (Clip == nullptr || Clip->WaitForLoaded())
-        return false;
-    return Clip->IsStreamable();
+    if (!_dspChain)
+        return;
+
+    // Add reverb effect
+    AudioDSPReverb* reverb = New<AudioDSPReverb>();
+    _dspChain->AddEffect(reverb);
+
+    // Add low-pass filter
+    AudioDSPLowPass* lowPass = New<AudioDSPLowPass>();
+    _dspChain->AddEffect(lowPass);
+
+    // Add high-pass filter
+    AudioDSPHighPass* highPass = New<AudioDSPHighPass>();
+    _dspChain->AddEffect(highPass);
+
+    // Add convolution effect
+    AudioDSPConvolution* convolution = New<AudioDSPConvolution>();
+    _dspChain->AddEffect(convolution);
+
+    // Set any stored impulse response
+    if (!ImpulseResponse.IsEmpty())
+    {
+        convolution->SetImpulseResponse(ImpulseResponse);
+    }
+
+    _initialized = true;
+
+    LOG(Info, "AudioSource: Initialized DSP chain for source {0}", GetNamePath());
+}
+
+void AudioSource::RequestStreamingBuffersUpdate()
+{
+    _needToUpdateStreamingBuffers = true;
 }
 
 void AudioSource::PlayInternal()
@@ -350,6 +467,17 @@ void AudioSource::Serialize(SerializeStream& stream, const void* otherObj)
     SERIALIZE_MEMBER(PlayOnStart, _playOnStart);
     SERIALIZE_MEMBER(StartTime, _startTime);
     SERIALIZE_MEMBER(AllowSpatialization, _allowSpatialization);
+
+    // DSP specific fields
+    SERIALIZE_MEMBER(ReverbMix, ReverbMix);
+    SERIALIZE_MEMBER(ReverbRoomSize, ReverbRoomSize);
+    SERIALIZE_MEMBER(ReverbDamping, ReverbDamping);
+    SERIALIZE_MEMBER(LowPassAmount, LowPassAmount);
+    SERIALIZE_MEMBER(LowPassFrequency, LowPassFrequency);
+    SERIALIZE_MEMBER(HighPassAmount, HighPassAmount);
+    SERIALIZE_MEMBER(HighPassFrequency, HighPassFrequency);
+    SERIALIZE_MEMBER(ConvolutionMix, ConvolutionMix);
+    SERIALIZE_MEMBER(ImpulseResponse, ImpulseResponse);
 }
 
 void AudioSource::Deserialize(DeserializeStream& stream, ISerializeModifier* modifier)
@@ -368,6 +496,17 @@ void AudioSource::Deserialize(DeserializeStream& stream, ISerializeModifier* mod
     DESERIALIZE_MEMBER(StartTime, _startTime);
     DESERIALIZE_MEMBER(AllowSpatialization, _allowSpatialization);
     DESERIALIZE(Clip);
+
+    // DSP specific fields
+    DESERIALIZE_MEMBER(ReverbMix, ReverbMix);
+    DESERIALIZE_MEMBER(ReverbRoomSize, ReverbRoomSize);
+    DESERIALIZE_MEMBER(ReverbDamping, ReverbDamping);
+    DESERIALIZE_MEMBER(LowPassAmount, LowPassAmount);
+    DESERIALIZE_MEMBER(LowPassFrequency, LowPassFrequency);
+    DESERIALIZE_MEMBER(HighPassAmount, HighPassAmount);
+    DESERIALIZE_MEMBER(HighPassFrequency, HighPassFrequency);
+    DESERIALIZE_MEMBER(ConvolutionMix, ConvolutionMix);
+    DESERIALIZE_MEMBER(ImpulseResponse, ImpulseResponse);
 }
 
 bool AudioSource::HasContentLoaded() const
@@ -495,6 +634,16 @@ void AudioSource::Update()
     }
 
     clip->Locker.Unlock();
+
+    // Update DSP effects periodically
+    static float updateTimer = 0.0f;
+    updateTimer += Time::GetDeltaTime();
+
+    if (updateTimer > 0.1f)
+    {
+        UpdateEffects();
+        updateTimer = 0.0f;
+    }
 }
 
 void AudioSource::OnEnable()
@@ -509,6 +658,16 @@ void AudioSource::OnEnable()
 #if USE_EDITOR
     GetSceneRendering()->AddViewportIcon(this);
 #endif
+
+    // Create DSP chain if not already created
+    if (!_dspChain)
+    {
+        _dspChain = AudioDSPSystem::GetSourceDSP(this);
+        if (_dspChain && !_initialized)
+        {
+            InitializeEffects();
+        }
+    }
 
     // Restore playback state
     if (Clip)
@@ -582,4 +741,64 @@ void AudioSource::BeginPlay(SceneBeginData* data)
         if (GetStartTime() > 0)
             SetTime(GetStartTime());
     }
+}
+
+void AudioSource::SetImpulseResponse(const Array<float>& ir)
+{
+    ImpulseResponse = ir;
+
+    // Update the convolution effect if it exists
+    if (_dspChain)
+    {
+        AudioDSPEffect* convolutionEffect = _dspChain->GetEffectByType(AudioDSPEffect::EffectType::Convolution);
+        if (convolutionEffect)
+        {
+            AudioDSPConvolution* convolution = static_cast<AudioDSPConvolution*>(convolutionEffect);
+            convolution->SetImpulseResponse(ir);
+        }
+    }
+}
+
+void AudioSource::SetReverbEffect(float mix, float roomSize, float damping)
+{
+    ReverbMix = mix;
+    ReverbRoomSize = roomSize;
+    ReverbDamping = damping;
+    UpdateEffects();
+}
+
+void AudioSource::SetLowPassFilter(float cutoffFrequency, bool enabled)
+{
+    LowPassFrequency = cutoffFrequency;
+    LowPassAmount = enabled ? 1.0f : 0.0f;
+    UpdateEffects();
+}
+
+void AudioSource::SetHighPassFilter(float cutoffFrequency, bool enabled)
+{
+    HighPassFrequency = cutoffFrequency;
+    HighPassAmount = enabled ? 1.0f : 0.0f;
+    UpdateEffects();
+}
+
+void AudioSource::SetConvolutionImpulseResponse(const Array<float>& impulseResponse, float mix)
+{
+    ImpulseResponse = impulseResponse;
+    ConvolutionMix = mix;
+    UpdateEffects();
+}
+
+void AudioSource::ClearAudioEffects()
+{
+    // Get the DSP chain for this source
+    if (_dspChain)
+    {
+        _dspChain->Clear();
+    }
+
+    // Reset effect parameters
+    ReverbMix = 0.0f;
+    LowPassAmount = 0.0f;
+    HighPassAmount = 0.0f;
+    ConvolutionMix = 0.0f;
 }

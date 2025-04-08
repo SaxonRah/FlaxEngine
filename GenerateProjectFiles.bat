@@ -19,6 +19,7 @@ Binaries\Tools\Flax.Build.exe -build -BuildBindingsOnly -arch=x64 -platform=Wind
 
 popd
 echo Done!
+pause
 exit /B 0
 
 :BuildToolFailed
@@ -28,4 +29,5 @@ goto Exit
 
 :Exit
 popd
+pause
 exit /B 1

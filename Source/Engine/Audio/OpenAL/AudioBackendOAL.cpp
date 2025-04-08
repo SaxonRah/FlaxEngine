@@ -1,4 +1,5 @@
 // Copyright (c) 2012-2024 Wojciech Figat. All rights reserved.
+// Copyright (c) 2025 Robert Valentine. All rights reserved.
 
 #if AUDIO_API_OPENAL
 
@@ -492,6 +493,11 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
                 float* sampleBufferFloat = (float*)Allocator::Allocate(bufferSize);
                 AudioTool::ConvertToFloat(samples, info.BitDepth, sampleBufferFloat, info.NumSamples);
 
+                // Note: For OpenAL, we don't process DSP here directly.
+                // Instead, we'll use the AudioInterceptor system which will
+                // process the audio buffer just before playback using source ID
+                // This is more reliable than trying to determine the source at this point
+
                 format = GetOpenALBufferFormat(info.NumChannels, 32);
                 alBufferData(bufferID, format, sampleBufferFloat, bufferSize, info.SampleRate);
                 ALC_CHECK_ERROR(alBufferData);
@@ -536,15 +542,19 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
         // 24-bit not supported, convert to 32-bit
         if (info.BitDepth == 24)
         {
-            const uint32 bufferSize = info.NumChannels * sizeof(int32);
+            const uint32 bufferSize = info.NumSamples * sizeof(float);
             byte* sampleBuffer32 = (byte*)Allocator::Allocate(bufferSize);
             AudioTool::ConvertBitDepth(samples, info.BitDepth, sampleBuffer32, 32, info.NumSamples);
 
-            format = GetOpenALBufferFormat(info.NumChannels, 32);
-            alBufferData(bufferID, format, sampleBuffer32, bufferSize, info.SampleRate);
-            ALC_CHECK_ERROR(alBufferData);
-
+            // Convert to float format which can be processed by DSP system
+            float* sampleBufferFloat = (float*)Allocator::Allocate(bufferSize);
+            AudioTool::ConvertToFloat(sampleBuffer32, 32, sampleBufferFloat, info.NumSamples);
             Allocator::Free(sampleBuffer32);
+
+            format = GetOpenALBufferFormat(info.NumChannels, 32);
+            alBufferData(bufferID, format, sampleBufferFloat, bufferSize, info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+            Allocator::Free(sampleBufferFloat);
         }
         else if (info.BitDepth == 8)
         {
@@ -555,10 +565,9 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
             for (uint32 i = 0; i < info.NumSamples; i++)
                 sampleBuffer[i] = ((int8*)samples)[i] + 128;
 
-            format = GetOpenALBufferFormat(info.NumChannels, 16);
+            format = GetOpenALBufferFormat(info.NumChannels, 8);
             alBufferData(bufferID, format, sampleBuffer, bufferSize, info.SampleRate);
             ALC_CHECK_ERROR(alBufferData);
-
             Allocator::Free(sampleBuffer);
         }
         else if (format)
@@ -570,8 +579,12 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
 
     if (!format)
     {
-        LOG(Error, "Not suppported audio data format for OpenAL device: BitDepth={}, NumChannels={}", info.BitDepth, info.NumChannels);
+        LOG(Error, "Not supported audio data format for OpenAL device: BitDepth={}, NumChannels={}", info.BitDepth, info.NumChannels);
     }
+
+    // For OpenAL, we can  hook into the Source_Play or Source_QueueBuffer functions
+    // to apply DSP processing just before playback. This is handled by the AudioHook
+    // system and doesn't need to be implemented here directly.
 }
 
 const Char* AudioBackendOAL::Base_Name()
