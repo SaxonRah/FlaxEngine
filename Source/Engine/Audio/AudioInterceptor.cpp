@@ -3,6 +3,7 @@
 #include "AudioInterceptor.h"
 #include "AudioDSPSystem.h"
 #include "AudioSource.h"
+#include "Engine/Core/Log.h"
 
 // Initialize static members
 Array<AudioBuffer> AudioInterceptor::_pendingBuffers;
@@ -15,6 +16,14 @@ AudioInterceptor::AudioInterceptor()
 
 void AudioInterceptor::Update()
 {
+    static int updateCounter = 0;
+    updateCounter++;
+
+    if (updateCounter % 100 == 0)
+    {
+        LOG(Warning, "AudioInterceptor: Update called, pending buffers = {0}", _pendingBuffers.Count());
+    }
+
     ScopeLock lock(_bufferLocker);
 
     // Process all pending buffers
@@ -37,8 +46,18 @@ void AudioInterceptor::Update()
 
             if (source)
             {
+                if (updateCounter % 100 == 0)
+                {
+                    LOG(Warning, "AudioInterceptor: Processing source {0}, ID {1}",
+                        source->GetNamePath(), buffer.SourceID);
+                }
+
                 // Process buffer through DSP system
                 AudioDSPSystem::ProcessSource(source, buffer.Data, buffer.SampleCount, buffer.Channels, buffer.SampleRate);
+            }
+            else if (updateCounter % 100 == 0)
+            {
+                LOG(Warning, "AudioInterceptor: Could not find source for ID {0}", buffer.SourceID);
             }
 
             buffer.Processed = true;
@@ -57,6 +76,15 @@ void AudioInterceptor::Update()
 
 void AudioInterceptor::InterceptBuffer(float* buffer, int32 sampleCount, int32 channels, int32 sampleRate, uint32 sourceID)
 {
+    static int interceptCounter = 0;
+    interceptCounter++;
+
+    if (interceptCounter % 100 == 0)
+    {
+        LOG(Warning, "AudioInterceptor: Intercepting buffer for source ID {0}, samples: {1}, channels: {2}",
+            sourceID, sampleCount, channels);
+    }
+
     if (!buffer || sampleCount <= 0 || channels <= 0 || sampleRate <= 0 || sourceID == 0)
         return;
 

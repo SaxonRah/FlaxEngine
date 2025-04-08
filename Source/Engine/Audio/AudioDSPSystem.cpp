@@ -78,8 +78,6 @@ void AudioDSPSystem::Shutdown()
 
 AudioDSPChain* AudioDSPSystem::GetSourceDSP(AudioSource* source)
 {
-    LOG(Warning, "AudioDSPSystem: GetSourceDSP called but not fully implemented");
-
     if (!source)
         return nullptr;
 

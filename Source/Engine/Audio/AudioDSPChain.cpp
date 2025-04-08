@@ -81,6 +81,18 @@ AudioDSPEffect* AudioDSPChain::GetEffectByType(AudioDSPEffect::EffectType type) 
 
 void AudioDSPChain::Process(float* buffer, int32 sampleCount, int32 channels, int32 sampleRate)
 {
+    static int processCounter = 0;
+    processCounter++;
+
+    // Only log occasionally to avoid spam
+    if (processCounter % 100 == 0)
+    {
+        LOG(Warning, "AudioDSPChain: Processing audio for source {0}, enabled={1}, effects={2}",
+            _source ? _source->GetNamePath() : String("Unknown"),
+            _isEnabled,
+            _effects.Count());
+    }
+
     ScopeLock lock(_locker);
 
     if (!_isEnabled || _effects.IsEmpty())
@@ -103,6 +115,11 @@ void AudioDSPChain::Process(float* buffer, int32 sampleCount, int32 channels, in
 
         if (effect->IsEnabled())
         {
+            if (processCounter % 100 == 0)
+            {
+                LOG(Warning, "  Processing effect type {0}", (int)effect->GetType());
+            }
+
             effect->Process(input, output, sampleCount, channels, sampleRate);
 
             // Swap buffers for next effect
