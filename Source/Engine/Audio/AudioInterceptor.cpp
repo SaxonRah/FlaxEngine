@@ -26,7 +26,7 @@ void AudioInterceptor::Update()
 
     ScopeLock lock(_bufferLocker);
 
-    // Process all pending buffers
+    // Process all pending buffers with extreme caution
     for (int i = 0; i < _pendingBuffers.Count(); i++)
     {
         AudioBuffer& buffer = _pendingBuffers[i];
@@ -37,7 +37,7 @@ void AudioInterceptor::Update()
             AudioSource* source = nullptr;
             for (auto s : Audio::Sources)
             {
-                if (s->SourceID == buffer.SourceID)
+                if (s && s->SourceID == buffer.SourceID)
                 {
                     source = s;
                     break;
@@ -52,8 +52,23 @@ void AudioInterceptor::Update()
                         source->GetNamePath(), buffer.SourceID);
                 }
 
-                // Process buffer through DSP system
-                AudioDSPSystem::ProcessSource(source, buffer.Data, buffer.SampleCount, buffer.Channels, buffer.SampleRate);
+                try
+                {
+                    // For large buffers, skip DSP to avoid crashes
+                    if (buffer.SampleCount <= 16384)
+                    {
+                        // Process buffer through DSP system
+                        AudioDSPSystem::ProcessSource(source, buffer.Data, buffer.SampleCount, buffer.Channels, buffer.SampleRate);
+                    }
+                    else
+                    {
+                        LOG(Warning, "AudioInterceptor: Skipping DSP for large buffer");
+                    }
+                }
+                catch (...)
+                {
+                    LOG(Error, "AudioInterceptor: Exception during audio processing");
+                }
             }
             else if (updateCounter % 100 == 0)
             {
@@ -76,17 +91,19 @@ void AudioInterceptor::Update()
 
 void AudioInterceptor::InterceptBuffer(float* buffer, int32 sampleCount, int32 channels, int32 sampleRate, uint32 sourceID)
 {
-    static int interceptCounter = 0;
-    interceptCounter++;
-
-    if (interceptCounter % 100 == 0)
-    {
-        LOG(Warning, "AudioInterceptor: Intercepting buffer for source ID {0}, samples: {1}, channels: {2}",
-            sourceID, sampleCount, channels);
-    }
-
     if (!buffer || sampleCount <= 0 || channels <= 0 || sampleRate <= 0 || sourceID == 0)
         return;
+
+    // Skip processing for extremely large buffers to avoid crashes
+    if (sampleCount > 16384)
+    {
+        LOG(Warning, "AudioInterceptor: Skipping DSP for large buffer (source {0}, samples {1})",
+            sourceID, sampleCount);
+        return;
+    }
+
+    LOG(Warning, "AudioInterceptor: Intercepting buffer for source ID {0}, samples: {1}, channels: {2}",
+        sourceID, sampleCount, channels);
 
     ScopeLock lock(_bufferLocker);
 

@@ -49,6 +49,29 @@ void AudioDSPReverb::SetWidth(float value)
 
 void AudioDSPReverb::Process(const float* input, float* output, int32 sampleCount, int32 channels, int32 sampleRate)
 {
+    if (!input || !output)
+    {
+        LOG(Error, "AudioDSPReverb: Null input or output pointer");
+        return;
+    }
+
+    // For safety, just copy input to output with no processing when the sample count is too high
+    if (sampleCount > 16384)
+    {
+        LOG(Warning, "AudioDSPReverb: Sample count too large ({0}), skipping processing", sampleCount);
+
+        // Safer copy implementation - do it in chunks
+        const int32 chunkSize = 1024;
+        const int32 totalSamples = sampleCount * channels;
+
+        for (int32 i = 0; i < totalSamples; i += chunkSize)
+        {
+            int32 samplesThisChunk = Math::Min(chunkSize, totalSamples - i);
+            Memory::CopyItems(output + i, input + i, samplesThisChunk);
+        }
+        return;
+    }
+
     ScopeLock lock(_locker);
 
     if (!_isEnabled)
@@ -61,59 +84,98 @@ void AudioDSPReverb::Process(const float* input, float* output, int32 sampleCoun
     // Initialize or update if sample rate changed
     Initialize(sampleRate);
 
-    // Process samples using Schroeder reverb algorithm
-    for (int32 i = 0; i < sampleCount; i++)
+    LOG(Warning, "AudioDSPReverb: Processing samples={0}, channels={1}, rate={2}",
+        sampleCount, channels, sampleRate);
+
+    // Process a small chunk at a time to avoid memory issues
+    const int32 chunkSize = 1024; // Process 1024 samples at a time
+
+    for (int32 chunkStart = 0; chunkStart < sampleCount; chunkStart += chunkSize)
     {
-        float left = 0.0f;
-        float right = 0.0f;
+        int32 currentChunkSize = Math::Min(chunkSize, sampleCount - chunkStart);
 
-        // Get mono input (average if stereo)
-        float monoInput = 0.0f;
-        for (int32 c = 0; c < channels; c++)
+        // Process this chunk
+        for (int32 i = 0; i < currentChunkSize; i++)
         {
-            monoInput += input[i * channels + c];
-        }
-        monoInput /= channels;
+            float left = 0.0f;
+            float right = 0.0f;
 
-        // Process through comb filters in parallel
-        for (int j = 0; j < NUM_COMBS; j++)
-        {
-            left += ProcessComb(_combFilters[j], monoInput);
+            // Get chunk-relative input index
+            int32 sampleIndex = chunkStart + i;
 
-            // For stereo reverb, use slightly different feedback values for right channel
-            if (channels > 1)
+            // Get mono input (average if stereo)
+            float monoInput = 0.0f;
+            int32 validChannels = 0;
+            for (int32 c = 0; c < channels && c < 8; c++)
             {
-                right += ProcessComb(_combFilters[j], monoInput) * (j % 2 == 0 ? 0.98f : 1.02f);
+                // Bounds check 
+                int32 index = sampleIndex * channels + c;
+                if (index < sampleCount * channels)
+                {
+                    monoInput += input[index];
+                    validChannels++;
+                }
             }
-        }
+            if (validChannels > 0)
+                monoInput /= validChannels;
 
-        // Process through allpass filters in series
-        for (int j = 0; j < NUM_ALLPASSES; j++)
-        {
-            left = ProcessAllpass(_allpassFilters[j], left);
-
-            if (channels > 1)
+            // Process through comb filters in parallel
+            for (int j = 0; j < NUM_COMBS; j++)
             {
-                right = ProcessAllpass(_allpassFilters[j], right);
+                if (_combFilters[j].bufferSize <= 0)
+                    continue;
+
+                left += ProcessComb(_combFilters[j], monoInput);
+
+                // For stereo reverb, use slightly different feedback values for right channel
+                if (channels > 1)
+                {
+                    right += ProcessComb(_combFilters[j], monoInput) * (j % 2 == 0 ? 0.98f : 1.02f);
+                }
             }
-        }
 
-        // Mix wet and dry signals
-        for (int32 c = 0; c < channels; c++)
-        {
-            const int32 index = i * channels + c;
-            const float dry = input[index];
+            // Process through allpass filters in series
+            for (int j = 0; j < NUM_ALLPASSES; j++)
+            {
+                if (_allpassFilters[j].bufferSize <= 0)
+                    continue;
 
-            // Apply stereo width
-            float wet = (channels == 1 || c == 0) ? left : right * _width + left * (1.0f - _width);
+                left = ProcessAllpass(_allpassFilters[j], left);
 
-            output[index] = dry * _dryLevel + wet * _wetLevel;
+                if (channels > 1)
+                {
+                    right = ProcessAllpass(_allpassFilters[j], right);
+                }
+            }
+
+            // Mix wet and dry signals
+            for (int32 c = 0; c < channels && c < 8; c++)
+            {
+                int32 index = sampleIndex * channels + c;
+                if (index < sampleCount * channels)
+                {
+                    const float dry = input[index];
+
+                    // Apply stereo width
+                    float wet = (channels == 1 || c == 0) ? left : right * _width + left * (1.0f - _width);
+
+                    output[index] = dry * _dryLevel + wet * _wetLevel;
+                }
+            }
         }
     }
 }
 
 float AudioDSPReverb::ProcessComb(CombFilter& filter, float input)
 {
+    // Safety check
+    if (filter.bufferSize <= 0 || filter.buffer.Count() != filter.bufferSize)
+        return 0.0f;
+
+    // Safety check for buffer index
+    if (filter.bufferIndex < 0 || filter.bufferIndex >= filter.bufferSize)
+        filter.bufferIndex = 0;
+
     // Read from buffer
     float output = filter.buffer[filter.bufferIndex];
 
@@ -133,6 +195,14 @@ float AudioDSPReverb::ProcessComb(CombFilter& filter, float input)
 
 float AudioDSPReverb::ProcessAllpass(AllpassFilter& filter, float input)
 {
+    // Safety check
+    if (filter.bufferSize <= 0 || filter.buffer.Count() != filter.bufferSize)
+        return input;
+
+    // Safety check for buffer index
+    if (filter.bufferIndex < 0 || filter.bufferIndex >= filter.bufferSize)
+        filter.bufferIndex = 0;
+
     // Read from buffer
     float output = filter.buffer[filter.bufferIndex];
 
@@ -156,6 +226,13 @@ void AudioDSPReverb::Initialize(int32 sampleRate)
     // Allpass filter buffer sizes for 44.1kHz (will be scaled for other sample rates)
     static const int allpassTunings[NUM_ALLPASSES] = { 556, 441, 341, 225 };
 
+    // Ensure sample rate is valid
+    if (sampleRate <= 0)
+    {
+        LOG(Error, "AudioDSPReverb: Invalid sample rate {0}", sampleRate);
+        sampleRate = 48000; // Use default sample rate
+    }
+
     // Scale tunings for current sample rate
     const float sampleRateScale = (float)sampleRate / 44100.0f;
 
@@ -164,13 +241,25 @@ void AudioDSPReverb::Initialize(int32 sampleRate)
     {
         CombFilter& filter = _combFilters[i];
 
-        filter.bufferSize = (int)(combTunings[i] * sampleRateScale);
-        if (filter.buffer.Count() != filter.bufferSize)
+        // Ensure buffer size is reasonable
+        filter.bufferSize = Math::Max(16, (int)(combTunings[i] * sampleRateScale));
+
+        try {
+            if (filter.buffer.Count() != filter.bufferSize)
+            {
+                filter.buffer.Resize(filter.bufferSize);
+                for (int j = 0; j < filter.bufferSize; j++)
+                    filter.buffer[j] = 0.0f;
+                filter.bufferIndex = 0;
+                filter.filterStore = 0.0f;
+            }
+        }
+        catch (...)
         {
-            filter.buffer.Resize(filter.bufferSize);
-            for (int j = 0; j < filter.bufferSize; j++)
-                filter.buffer[j] = 0.0f;
+            LOG(Error, "AudioDSPReverb: Exception resizing comb filter {0}", i);
+            filter.bufferSize = 0;
             filter.bufferIndex = 0;
+            filter.filterStore = 0.0f;
         }
     }
 
@@ -179,12 +268,22 @@ void AudioDSPReverb::Initialize(int32 sampleRate)
     {
         AllpassFilter& filter = _allpassFilters[i];
 
-        filter.bufferSize = (int)(allpassTunings[i] * sampleRateScale);
-        if (filter.buffer.Count() != filter.bufferSize)
+        // Ensure buffer size is reasonable
+        filter.bufferSize = Math::Max(16, (int)(allpassTunings[i] * sampleRateScale));
+
+        try {
+            if (filter.buffer.Count() != filter.bufferSize)
+            {
+                filter.buffer.Resize(filter.bufferSize);
+                for (int j = 0; j < filter.bufferSize; j++)
+                    filter.buffer[j] = 0.0f;
+                filter.bufferIndex = 0;
+            }
+        }
+        catch (...)
         {
-            filter.buffer.Resize(filter.bufferSize);
-            for (int j = 0; j < filter.bufferSize; j++)
-                filter.buffer[j] = 0.0f;
+            LOG(Error, "AudioDSPReverb: Exception resizing allpass filter {0}", i);
+            filter.bufferSize = 0;
             filter.bufferIndex = 0;
         }
 
@@ -193,6 +292,8 @@ void AudioDSPReverb::Initialize(int32 sampleRate)
 
     // Update parameters
     UpdateParameters();
+
+    LOG(Warning, "AudioDSPReverb: Initialized for sample rate {0}", sampleRate);
 }
 
 void AudioDSPReverb::UpdateParameters()

@@ -13,6 +13,7 @@
 #include "Engine/Audio/Audio.h"
 #include "Engine/Audio/AudioListener.h"
 #include "Engine/Audio/AudioSource.h"
+#include "Engine/Audio/AudioHook.h"
 #include "Engine/Audio/AudioSettings.h"
 
 // Include OpenAL library
@@ -493,12 +494,45 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
                 float* sampleBufferFloat = (float*)Allocator::Allocate(bufferSize);
                 AudioTool::ConvertToFloat(samples, info.BitDepth, sampleBufferFloat, info.NumSamples);
 
-                // Note: For OpenAL, we don't process DSP here directly.
-                // Instead, we'll use the AudioInterceptor system which will
-                // process the audio buffer just before playback using source ID
-                // This is more reliable than trying to determine the source at this point
+                // If using float format, apply DSP effects
+                ALenum floatFormat = GetOpenALBufferFormat(info.NumChannels, 32);
+                if (floatFormat == AL_FORMAT_MONO_FLOAT32 || floatFormat == AL_FORMAT_STEREO_FLOAT32)
+                {
+                    // Get source ID from buffer ID (approximate matching)
+                    uint32 sourceID = 0;
 
-                format = GetOpenALBufferFormat(info.NumChannels, 32);
+                    // Find the source using this buffer
+                    ALC::Locker.Lock();
+                    for (auto& pair : ALC::SourceIDtoFormat)
+                    {
+                        // This is approximate, find a better way to match buffers to sources
+                        if (pair.Key != 0)
+                        {
+                            sourceID = pair.Key;
+                            break;
+                        }
+                    }
+                    ALC::Locker.Unlock();
+
+                    if (sourceID != 0)
+                    {
+                        LOG(Warning, "AudioBackendOAL: Applying DSP effects to buffer {0} for source {1}",
+                            bufferID, sourceID);
+
+                        int32 sampleCount = info.NumSamples / info.NumChannels;
+
+                        // Process through DSP system
+                        AudioHook::OnBufferSubmit(
+                            sampleBufferFloat,
+                            sampleCount,
+                            info.NumChannels,
+                            info.SampleRate,
+                            sourceID
+                        );
+                    }
+                }
+
+                format = floatFormat;
                 alBufferData(bufferID, format, sampleBufferFloat, bufferSize, info.SampleRate);
                 ALC_CHECK_ERROR(alBufferData);
                 Allocator::Free(sampleBufferFloat);
@@ -551,7 +585,43 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
             AudioTool::ConvertToFloat(sampleBuffer32, 32, sampleBufferFloat, info.NumSamples);
             Allocator::Free(sampleBuffer32);
 
-            format = GetOpenALBufferFormat(info.NumChannels, 32);
+            // Apply DSP processing if possible
+            ALenum floatFormat = GetOpenALBufferFormat(info.NumChannels, 32);
+
+            // Get source ID from buffer ID (approximate matching)
+            uint32 sourceID = 0;
+
+            // Find the source using this buffer
+            ALC::Locker.Lock();
+            for (auto& pair : ALC::SourceIDtoFormat)
+            {
+                // This is approximate, find a better way to match buffers to sources
+                if (pair.Key != 0)
+                {
+                    sourceID = pair.Key;
+                    break;
+                }
+            }
+            ALC::Locker.Unlock();
+
+            if (sourceID != 0)
+            {
+                LOG(Warning, "AudioBackendOAL: Applying DSP effects to multichannel buffer {0} for source {1}",
+                    bufferID, sourceID);
+
+                int32 sampleCount = info.NumSamples / info.NumChannels;
+
+                // Process through DSP system
+                AudioHook::OnBufferSubmit(
+                    sampleBufferFloat,
+                    sampleCount,
+                    info.NumChannels,
+                    info.SampleRate,
+                    sourceID
+                );
+            }
+
+            format = floatFormat;
             alBufferData(bufferID, format, sampleBufferFloat, bufferSize, info.SampleRate);
             ALC_CHECK_ERROR(alBufferData);
             Allocator::Free(sampleBufferFloat);
@@ -581,10 +651,6 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
     {
         LOG(Error, "Not supported audio data format for OpenAL device: BitDepth={}, NumChannels={}", info.BitDepth, info.NumChannels);
     }
-
-    // For OpenAL, we can  hook into the Source_Play or Source_QueueBuffer functions
-    // to apply DSP processing just before playback. This is handled by the AudioHook
-    // system and doesn't need to be implemented here directly.
 }
 
 const Char* AudioBackendOAL::Base_Name()

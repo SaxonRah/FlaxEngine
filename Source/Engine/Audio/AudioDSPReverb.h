@@ -17,6 +17,8 @@ private:
     float _dryLevel;
     float _width;
 
+    int32 _lastSampleRateChecked = 0;
+
     // Comb and allpass filters for reverb algorithm
     static const int NUM_COMBS = 8;
     static const int NUM_ALLPASSES = 4;

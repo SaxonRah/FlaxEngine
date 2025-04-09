@@ -54,6 +54,29 @@ void AudioDSPConvolution::SetDryLevel(float value)
 
 void AudioDSPConvolution::Process(const float* input, float* output, int32 sampleCount, int32 channels, int32 sampleRate)
 {
+    if (!input || !output)
+    {
+        LOG(Error, "AudioDSPConvolution: Null input or output pointer");
+        return;
+    }
+
+    // Copy input to output with no processing when the sample count is too high
+    if (sampleCount > 16384)
+    {
+        LOG(Warning, "AudioDSPConvolution: Sample count too large ({0}), skipping processing", sampleCount);
+
+        // Safer copy implementation - do it in chunks
+        const int32 chunkSize = 1024;
+        const int32 totalSamples = sampleCount * channels;
+
+        for (int32 i = 0; i < totalSamples; i += chunkSize)
+        {
+            int32 samplesThisChunk = Math::Min(chunkSize, totalSamples - i);
+            Memory::CopyItems(output + i, input + i, samplesThisChunk);
+        }
+        return;
+    }
+
     ScopeLock lock(_locker);
 
     if (!_isEnabled || _irLength == 0)
