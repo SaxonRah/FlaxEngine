@@ -5,6 +5,7 @@
 #if AUDIO_API_OPENAL
 
 #include "../AudioBackend.h"
+#include "../AudioEffectChain.h"
 
 /// <summary>
 /// The OpenAL audio backend.
@@ -47,6 +48,9 @@ public:
     bool Base_Init() override;
     void Base_Update() override;
     void Base_Dispose() override;
+	
+	void Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain) override;
+
 };
 
 #endif

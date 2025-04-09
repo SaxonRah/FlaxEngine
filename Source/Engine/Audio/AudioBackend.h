@@ -6,6 +6,8 @@
 #include "Types.h"
 #include "Engine/Core/Types/BaseTypes.h"
 
+class AudioEffectChain;
+
 /// <summary>
 /// The helper class for that handles active audio backend operations.
 /// </summary>
@@ -66,6 +68,9 @@ private:
     virtual bool Base_Init() = 0;
     virtual void Base_Update() = 0;
     virtual void Base_Dispose() = 0;
+	
+	// Effect Chain
+	virtual void Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain) = 0;
 
 public:
     virtual ~AudioBackend()
@@ -214,7 +219,16 @@ public:
             Instance->Buffer_Write(bufferID, samples, info);
         }
     };
-
+	
+	class EffectChain
+    {
+    public:
+        FORCE_INLINE static void Set(uint32 sourceID, AudioEffectChain* chain)
+        {
+            Instance->Source_SetEffectChain(sourceID, chain);
+        }
+    };
+	
     FORCE_INLINE static const Char* Name()
     {
         return Instance->Base_Name();

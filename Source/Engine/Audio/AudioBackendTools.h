@@ -3,6 +3,7 @@
 #pragma once
 
 #include "Engine/Core/Math/Transform.h"
+#include "AudioEffectChain.h"
 
 /// <summary>
 /// The helper class for that handles active audio backend operations.
@@ -14,6 +15,10 @@ public:
     {
         float Volume = 1.0f;
         float DopplerFactor = 1.0f;
+        bool EnableRayTracing = false;
+        int32 MaxRayCount = 64;
+        int32 MaxReflections = 4;
+        float RayTracingRadius = 5000.0f;
     };
 
     struct Listener
@@ -164,5 +169,18 @@ public:
             outputMatrix[sourceChannels + 1] = channels[FrontRight];
             break;
         }
+    }
+	
+	static void ProcessWithEffectChain(float* buffer, uint32 numSamples, const AudioDataInfo& format, AudioEffectChain* chain)
+    {
+        if (chain == nullptr || numSamples == 0)
+            return;
+        
+        // Process through the effect chain
+        Array<float> tempBuffer;
+        tempBuffer.Resize(numSamples);
+        Platform::MemoryCopy(tempBuffer.Get(), buffer, numSamples * sizeof(float));
+        
+        chain->Process(tempBuffer.Get(), buffer, numSamples, format);
     }
 };

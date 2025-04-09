@@ -45,6 +45,8 @@ namespace ALC
     AudioBackend::FeatureFlags Features = AudioBackend::FeatureFlags::None;
     CriticalSection Locker;
     Dictionary<uint32, AudioDataInfo> SourceIDtoFormat;
+	
+    Dictionary<uint32, AudioEffectChain*> SourceEffectChains;
 
     bool IsExtensionSupported(const char* extension)
     {
@@ -474,6 +476,7 @@ void AudioBackendOAL::Buffer_Delete(uint32 bufferID)
     ALC_CHECK_ERROR(alDeleteBuffers);
 }
 
+/*
 void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDataInfo& info)
 {
     PROFILE_CPU();
@@ -571,6 +574,159 @@ void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDa
     if (!format)
     {
         LOG(Error, "Not suppported audio data format for OpenAL device: BitDepth={}, NumChannels={}", info.BitDepth, info.NumChannels);
+    }
+}
+*/
+
+void AudioBackendOAL::Buffer_Write(uint32 bufferID, byte* samples, const AudioDataInfo& info)
+{
+    PROFILE_CPU();
+
+    // Check if we need to apply effect processing
+    AudioEffectChain* effectChain = nullptr;
+    uint32 sourceID = 0;
+    
+    // Find if this buffer is associated with a source that has effects
+    ALC::Locker.Lock();
+    for (auto& pair : ALC::SourceEffectChains)
+    {
+        ALint attachedBuffer = 0;
+        alGetSourcei(pair.Key, AL_BUFFER, &attachedBuffer);
+        
+        if (attachedBuffer == bufferID)
+        {
+            sourceID = pair.Key;
+            effectChain = pair.Value;
+            break;
+        }
+    }
+    ALC::Locker.Unlock();
+
+    // Check if we need to process through an effect chain
+    byte* processedSamples = samples;
+    Array<float> processingBuffer;
+    Array<byte> processedData;
+    
+    if (effectChain && !effectChain->GetEffects().IsEmpty())
+    {
+        // Convert to float for processing
+        const uint32 numSamples = info.NumSamples;
+        processingBuffer.Resize(numSamples);
+        
+        // Convert to float
+        AudioTool::ConvertToFloat(samples, info.BitDepth, processingBuffer.Get(), numSamples);
+        
+        // Process through effect chain
+        effectChain->Process(processingBuffer.Get(), processingBuffer.Get(), numSamples, info);
+        
+        // Allocate new buffer for processed data
+        processedData.Resize(info.NumSamples * info.BitDepth / 8);
+        
+        // Convert back to original format
+        // Allocate an int32 array for the processed data
+        Array<int32> processedIntSamples;
+        processedIntSamples.Resize(numSamples);
+
+        // Convert the float data to int32
+        AudioTool::ConvertFromFloat(processingBuffer.Get(), processedIntSamples.Get(), numSamples);
+        
+        // Use the processed data
+        processedSamples = processedData.Get();
+    }
+
+    // Pick the format for the audio data (it might not be supported natively)
+    ALenum format = GetOpenALBufferFormat(info.NumChannels, info.BitDepth);
+
+    // Mono or stereo
+    if (info.NumChannels <= 2)
+    {
+        if (info.BitDepth > 16)
+        {
+            if (ALC::IsExtensionSupported("AL_EXT_float32"))
+            {
+                const uint32 bufferSize = info.NumSamples * sizeof(float);
+                float* sampleBufferFloat = (float*)Allocator::Allocate(bufferSize);
+                AudioTool::ConvertToFloat(processedSamples, info.BitDepth, sampleBufferFloat, info.NumSamples);
+
+                format = GetOpenALBufferFormat(info.NumChannels, 32);
+                alBufferData(bufferID, format, sampleBufferFloat, bufferSize, info.SampleRate);
+                ALC_CHECK_ERROR(alBufferData);
+                Allocator::Free(sampleBufferFloat);
+            }
+            else
+            {
+                LOG(Warning, "OpenAL doesn't support bit depth larger than 16. Audio data will be truncated.");
+                const uint32 bufferSize = info.NumSamples * 2;
+                byte* sampleBuffer16 = (byte*)Allocator::Allocate(bufferSize);
+                AudioTool::ConvertBitDepth(processedSamples, info.BitDepth, sampleBuffer16, 16, info.NumSamples);
+
+                format = GetOpenALBufferFormat(info.NumChannels, 16);
+                alBufferData(bufferID, format, sampleBuffer16, bufferSize, info.SampleRate);
+                ALC_CHECK_ERROR(alBufferData);
+                Allocator::Free(sampleBuffer16);
+            }
+        }
+        else if (info.BitDepth == 8)
+        {
+            // OpenAL expects unsigned 8-bit data, but engine stores it as signed, so convert
+            const uint32 bufferSize = info.NumSamples * (info.BitDepth / 8);
+            byte* sampleBuffer = (byte*)Allocator::Allocate(bufferSize);
+            for (uint32 i = 0; i < info.NumSamples; i++)
+                sampleBuffer[i] = ((int8*)processedSamples)[i] + 128;
+
+            alBufferData(bufferID, format, sampleBuffer, bufferSize, info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+            Allocator::Free(sampleBuffer);
+        }
+        else if (format)
+        {
+            alBufferData(bufferID, format, processedSamples, info.NumSamples * (info.BitDepth / 8), info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+        }
+    }
+    // Multichannel
+    else
+    {
+        // Note: Assuming AL_EXT_MCFORMATS is supported. If it's not, channels should be reduced to mono or stereo.
+
+        // 24-bit not supported, convert to 32-bit
+        if (info.BitDepth == 24)
+        {
+            const uint32 bufferSize = info.NumChannels * sizeof(int32);
+            byte* sampleBuffer32 = (byte*)Allocator::Allocate(bufferSize);
+            AudioTool::ConvertBitDepth(processedSamples, info.BitDepth, sampleBuffer32, 32, info.NumSamples);
+
+            format = GetOpenALBufferFormat(info.NumChannels, 32);
+            alBufferData(bufferID, format, sampleBuffer32, bufferSize, info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+
+            Allocator::Free(sampleBuffer32);
+        }
+        else if (info.BitDepth == 8)
+        {
+            // OpenAL expects unsigned 8-bit data, but engine stores it as signed, so convert
+            const uint32 bufferSize = info.NumSamples * (info.BitDepth / 8);
+            byte* sampleBuffer = (byte*)Allocator::Allocate(bufferSize);
+
+            for (uint32 i = 0; i < info.NumSamples; i++)
+                sampleBuffer[i] = ((int8*)processedSamples)[i] + 128;
+
+            format = GetOpenALBufferFormat(info.NumChannels, 16);
+            alBufferData(bufferID, format, sampleBuffer, bufferSize, info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+
+            Allocator::Free(sampleBuffer);
+        }
+        else if (format)
+        {
+            alBufferData(bufferID, format, processedSamples, info.NumSamples * (info.BitDepth / 8), info.SampleRate);
+            ALC_CHECK_ERROR(alBufferData);
+        }
+    }
+
+    if (!format)
+    {
+        LOG(Error, "Not supported audio data format for OpenAL device: BitDepth={}, NumChannels={}", info.BitDepth, info.NumChannels);
     }
 }
 
@@ -759,6 +915,13 @@ void AudioBackendOAL::Base_Dispose()
         alcCloseDevice(ALC::Device);
         ALC::Device = nullptr;
     }
+}
+
+void AudioBackendOAL::Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain)
+{
+    ALC::Locker.Lock();
+    ALC::SourceEffectChains[sourceID] = chain;
+    ALC::Locker.Unlock();
 }
 
 #endif

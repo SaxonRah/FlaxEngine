@@ -156,4 +156,8 @@ void AudioBackendNone::Base_Dispose()
 {
 }
 
+void AudioBackendNone::Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain)
+{
+}
+
 #endif

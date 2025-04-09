@@ -94,6 +94,9 @@ namespace XAudio2
         bool IsLoop;
         uint32 LastBufferID;
         VoiceCallback Callback;
+		
+		AudioEffectChain* EffectChain;
+		Array<float> ProcessingBuffer;
 
         Source()
         {
@@ -116,6 +119,8 @@ namespace XAudio2
             LastBufferID = 0;
             LastBufferStartSamplesPlayed = 0;
             BuffersProcessed = 0;
+			
+			EffectChain = nullptr;
         }
 
         bool IsFree() const
@@ -169,7 +174,7 @@ namespace XAudio2
     {
         ForceDirty = true;
     }
-
+	/*
     void QueueBuffer(Source* aSource, const int32 bufferID, XAUDIO2_BUFFER& buffer)
     {
         Buffer* aBuffer = Buffers[bufferID - 1];
@@ -189,7 +194,61 @@ namespace XAudio2
         const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);
         XAUDIO2_CHECK_ERROR(SubmitSourceBuffer);
     }
+	*/
+	void QueueBuffer(Source* aSource, const int32 bufferID, XAUDIO2_BUFFER& buffer)
+	{
+		Buffer* aBuffer = Buffers[bufferID - 1];
+		
+		// If we have an effect chain, apply DSP processing
+		if (aSource->EffectChain && !aSource->EffectChain->GetEffects().IsEmpty())
+		{
+			// Convert to float for processing
+			const uint32 numSamples = aBuffer->Data.Count() / (aBuffer->Info.BitDepth / 8);
+			if (aSource->ProcessingBuffer.Count() < numSamples)
+				aSource->ProcessingBuffer.Resize(numSamples);
+			
+			// Convert audio data to float format
+			AudioTool::ConvertToFloat(aBuffer->Data.Get(), aBuffer->Info.BitDepth, 
+									  aSource->ProcessingBuffer.Get(), numSamples);
+			
+			// Process through DSP chain
+			aSource->EffectChain->Process(aSource->ProcessingBuffer.Get(), 
+										 aSource->ProcessingBuffer.Get(), 
+										 numSamples, aBuffer->Info);
+			
+			// Create temporary buffer for processed data
+			Array<byte> processedData;
+			processedData.Resize(aBuffer->Data.Count());
+			
+			// Convert back to original format
+            AudioTool::ConvertFromFloat(outputBuffer.Get(), processedData.Get(), numSamples);
+            
+			// Queue the processed buffer
+			buffer.pAudioData = processedData.Get();
+			buffer.AudioBytes = processedData.Count();
+		}
+		else
+		{
+			// Original behavior for no effect chain
+			buffer.pAudioData = aBuffer->Data.Get();
+			buffer.AudioBytes = aBuffer->Data.Count();
+		}
 
+		// Rest of the original function...
+		if (aSource->StartTimeForQueueBuffer > ZeroTolerance)
+		{
+			// Offset start position when playing buffer with a custom time offset
+			const uint32 bytesPerSample = aBuffer->Info.BitDepth / 8 * aBuffer->Info.NumChannels;
+			buffer.PlayBegin = (UINT32)(aSource->StartTimeForQueueBuffer * aBuffer->Info.SampleRate);
+			buffer.PlayLength = (buffer.AudioBytes / bytesPerSample) - buffer.PlayBegin;
+			aSource->LastBufferStartTime = aSource->StartTimeForQueueBuffer;
+			aSource->StartTimeForQueueBuffer = 0;
+		}
+
+		const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);
+		XAUDIO2_CHECK_ERROR(SubmitSourceBuffer);
+	}
+	
     void VoiceCallback::OnBufferEnd(void* pBufferContext)
     {
         auto aSource = GetSource(SourceID);
@@ -743,6 +802,19 @@ void AudioBackendXAudio2::Base_Dispose()
         XAudio2::Instance->Release();
         XAudio2::Instance = nullptr;
     }
+}
+
+void AudioBackendXAudio2::Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain)
+{
+    auto aSource = XAudio2::GetSource(sourceID);
+    if (!aSource || !aSource->Voice)
+        return;
+    
+    // Store reference to chain
+    aSource->EffectChain = chain;
+    
+    // Handle DSP processing in the buffer submission stages
+    // Since XAudio2 provides XAPO effect interface, we could potentially implement native effects later for better performance
 }
 
 #endif

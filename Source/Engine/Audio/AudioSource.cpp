@@ -21,6 +21,7 @@ AudioSource::AudioSource(const SpawnParams& params)
     , _playOnStart(false)
     , _startTime(0.0f)
     , _allowSpatialization(true)
+    , _effectChain(nullptr)
 {
     Clip.Changed.Bind<AudioSource, &AudioSource::OnClipChanged>(this);
     Clip.Loaded.Bind<AudioSource, &AudioSource::OnClipLoaded>(this);
@@ -582,4 +583,15 @@ void AudioSource::BeginPlay(SceneBeginData* data)
         if (GetStartTime() > 0)
             SetTime(GetStartTime());
     }
+}
+
+void AudioSource::SetEffectChain(AudioEffectChain* value)
+{
+    if (_effectChain == value)
+        return;
+    
+    _effectChain = value;
+    
+    if (SourceID)
+        AudioBackend::EffectChain::Set(SourceID, _effectChain);
 }
