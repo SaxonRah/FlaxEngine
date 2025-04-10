@@ -194,7 +194,9 @@ namespace XAudio2
         const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);
         XAUDIO2_CHECK_ERROR(SubmitSourceBuffer);
     }
-	*/
+    // ^ old
+
+	// v new
 	void QueueBuffer(Source* aSource, const int32 bufferID, XAUDIO2_BUFFER& buffer)
 	{
 		Buffer* aBuffer = Buffers[bufferID - 1];
@@ -202,6 +204,9 @@ namespace XAudio2
 		// If we have an effect chain, apply DSP processing
 		if (aSource->EffectChain && !aSource->EffectChain->GetEffects().IsEmpty())
 		{
+            if (aSource->EffectChain->IsDirty())
+                aSource->EffectChain->ClearDirty();
+
 			// Convert to float for processing
 			const uint32 numSamples = aBuffer->Data.Count() / (aBuffer->Info.BitDepth / 8);
 			if (aSource->ProcessingBuffer.Count() < numSamples)
@@ -221,7 +226,9 @@ namespace XAudio2
 			processedData.Resize(aBuffer->Data.Count());
 			
 			// Convert back to original format
-            AudioTool::ConvertFromFloat(outputBuffer.Get(), processedData.Get(), numSamples);
+            //AudioTool::ConvertFromFloat(outputBuffer.Get(), processedData.Get(), numSamples);
+            AudioTool::ConvertFromFloat(aSource->ProcessingBuffer.Get(), processedData.Get(), numSamples);
+
             
 			// Queue the processed buffer
 			buffer.pAudioData = processedData.Get();
@@ -263,6 +270,79 @@ namespace XAudio2
         aSource->Voice->GetState(&state);
         aSource->LastBufferStartSamplesPlayed = state.SamplesPlayed;
     }
+}
+*/
+
+void AudioBackendXAudio2::QueueBuffer(Source* aSource, const int32 bufferID, XAUDIO2_BUFFER& buffer)
+{
+    Buffer* aBuffer = Buffers[bufferID - 1];
+
+    // Get the source ID and look up the effect chain
+    uint32 sourceID = aSource->Callback.SourceID;
+    AudioEffectChain* effectChain = GetEffectChainForSource(sourceID);
+
+    // Register buffer with source for tracking
+    RegisterBufferWithSource(bufferID, sourceID);
+
+    // Set the audio data to use for the buffer
+    byte* audioData = aBuffer->Data.Get();
+    uint32 audioDataSize = aBuffer->Data.Count();
+
+    // Process with effect chain if available
+    Array<float> processingBuffer;
+    Array<byte> processedData;
+
+    if (effectChain && !effectChain->GetEffects().IsEmpty())
+    {
+        // Convert to float for processing
+        const uint32 numSamples = aBuffer->Info.NumSamples;
+        processingBuffer.Resize(numSamples);
+        AudioTool::ConvertToFloat(audioData, aBuffer->Info.BitDepth, processingBuffer.Get(), numSamples);
+
+        // Process through the effect chain
+        effectChain->Process(processingBuffer.Get(), processingBuffer.Get(), numSamples, aBuffer->Info);
+
+        // Prepare buffer for processed data
+        processedData.Resize(numSamples * aBuffer->Info.BitDepth / 8);
+
+        // Convert back to original format
+        if (aBuffer->Info.BitDepth == 32)
+        {
+            // Direct copy for float data
+            Platform::MemoryCopy(processedData.Get(), processingBuffer.Get(), processedData.Count());
+        }
+        else
+        {
+            // Convert through int32 for other formats
+            Array<int32> intSamples;
+            intSamples.Resize(numSamples);
+            AudioTool::ConvertFromFloat(processingBuffer.Get(), intSamples.Get(), numSamples);
+            AudioTool::ConvertBitDepth((byte*)intSamples.Get(), 32, processedData.Get(), aBuffer->Info.BitDepth, numSamples);
+        }
+
+        // Use processed data
+        audioData = processedData.Get();
+        audioDataSize = processedData.Count();
+    }
+
+    // Configure the XAUDIO2_BUFFER structure
+    buffer.pAudioData = audioData;
+    buffer.AudioBytes = audioDataSize;
+
+    // Handle time offsets for playback position
+    if (aSource->StartTimeForQueueBuffer > ZeroTolerance)
+    {
+        // Offset start position when playing buffer with a custom time offset
+        const uint32 bytesPerSample = aBuffer->Info.BitDepth / 8 * aBuffer->Info.NumChannels;
+        buffer.PlayBegin = (UINT32)(aSource->StartTimeForQueueBuffer * aBuffer->Info.SampleRate);
+        buffer.PlayLength = (buffer.AudioBytes / bytesPerSample) - buffer.PlayBegin;
+        aSource->LastBufferStartTime = aSource->StartTimeForQueueBuffer;
+        aSource->StartTimeForQueueBuffer = 0;
+    }
+
+    // Submit buffer to the audio device
+    const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);
+    XAUDIO2_CHECK_ERROR(SubmitSourceBuffer);
 }
 
 void AudioBackendXAudio2::Listener_Reset()
@@ -357,6 +437,7 @@ uint32 AudioBackendXAudio2::Source_Add(const AudioDataInfo& format, const Vector
     return sourceID;
 }
 
+/*
 void AudioBackendXAudio2::Source_Remove(uint32 sourceID)
 {
     ScopeLock lock(XAudio2::Locker);
@@ -370,6 +451,26 @@ void AudioBackendXAudio2::Source_Remove(uint32 sourceID)
         aSource->Voice->DestroyVoice();
     }
     aSource->Init();
+}
+*/
+
+void AudioBackendXAudio2::Source_Remove(uint32 sourceID)
+{
+    // Clean up buffer tracking
+    BufferMapLock.Lock();
+    BufferQueueMap.Remove(sourceID);
+    SourceEffectChains.Remove(sourceID);
+    BufferMapLock.Unlock();
+
+    // Existing source removal code...
+    alSourcei(sourceID, AL_BUFFER, 0);
+    ALC_CHECK_ERROR(alSourcei);
+    alDeleteSources(1, &sourceID);
+    ALC_CHECK_ERROR(alDeleteSources);
+
+    ALC::Locker.Lock();
+    ALC::SourceIDtoFormat.Remove(sourceID);
+    ALC::Locker.Unlock();
 }
 
 void AudioBackendXAudio2::Source_VelocityChanged(uint32 sourceID, const Vector3& velocity)
@@ -611,8 +712,12 @@ void AudioBackendXAudio2::Source_GetQueuedBuffersCount(uint32 sourceID, int32& q
     }
 }
 
+/*
 void AudioBackendXAudio2::Source_QueueBuffer(uint32 sourceID, uint32 bufferID)
 {
+    // Register buffer with source
+    RegisterBufferWithSource(bufferID, sourceID);
+
     auto aSource = XAudio2::GetSource(sourceID);
     if (!aSource)
         return;
@@ -625,7 +730,162 @@ void AudioBackendXAudio2::Source_QueueBuffer(uint32 sourceID, uint32 bufferID)
 
     XAudio2::QueueBuffer(aSource, bufferID, buffer);
 }
+*/
 
+void AudioBackendXAudio2::Source_QueueBuffer(uint32 sourceID, uint32 bufferID)
+{
+    auto aSource = XAudio2::GetSource(sourceID);
+    if (!aSource)
+        return;
+
+    // Register buffer with source for tracking
+    RegisterBufferWithSource(bufferID, sourceID);
+
+    // Add to the buffer queue for this source
+    BufferMapLock.Lock();
+
+    // Get or create the queue for this source
+    Array<uint32>* queuedBuffers = nullptr;
+    if (!BufferQueueMap.TryGet(sourceID, queuedBuffers))
+    {
+        // Initialize empty queue if not found
+        BufferQueueMap[sourceID] = Array<uint32>();
+        queuedBuffers = &BufferQueueMap[sourceID];
+    }
+
+    // Add this buffer to the end of the queue
+    queuedBuffers->Add(bufferID);
+    BufferMapLock.Unlock();
+
+    // Get the buffer data
+    Buffer* aBuffer = Buffers[bufferID - 1];
+    AudioEffectChain* effectChain = GetEffectChainForSource(sourceID);
+
+    // Create buffer structure
+    XAUDIO2_BUFFER buffer = { 0 };
+    buffer.pContext = aBuffer;
+
+    // Set default values using original buffer
+    buffer.pAudioData = aBuffer->Data.Get();
+    buffer.AudioBytes = aBuffer->Data.Count();
+
+    // Process with effect chain if available
+    Array<float> processingBuffer;
+    Array<byte> processedData;
+
+    if (effectChain && !effectChain->GetEffects().IsEmpty())
+    {
+        // Convert to float for processing
+        const uint32 numSamples = aBuffer->Info.NumSamples;
+        processingBuffer.Resize(numSamples);
+
+        // Convert to float format
+        for (uint32 i = 0; i < numSamples; i++)
+        {
+            float sample = 0.0f;
+
+            // Handle different bit depths
+            switch (aBuffer->Info.BitDepth)
+            {
+            case 8:
+            {
+                int8* samples = (int8*)aBuffer->Data.Get();
+                sample = samples[i] / 128.0f;
+                break;
+            }
+            case 16:
+            {
+                int16* samples = (int16*)aBuffer->Data.Get();
+                sample = samples[i] / 32768.0f;
+                break;
+            }
+            case 24:
+            {
+                byte* samples = aBuffer->Data.Get();
+                int32 value = (samples[i * 3] | (samples[i * 3 + 1] << 8) | (samples[i * 3 + 2] << 16));
+                if (value & 0x800000) value |= 0xFF000000; // Sign extend
+                sample = value / 8388608.0f; // 2^23
+                break;
+            }
+            case 32:
+            {
+                float* samples = (float*)aBuffer->Data.Get();
+                sample = samples[i];
+                break;
+            }
+            }
+
+            processingBuffer[i] = sample;
+        }
+
+        // Process through effect chain
+        effectChain->Process(processingBuffer.Get(),
+            processingBuffer.Get(),
+            numSamples, aBuffer->Info);
+
+        // Allocate buffer for the processed data
+        processedData.Resize(aBuffer->Data.Count());
+
+        // Convert back to original format
+        for (uint32 i = 0; i < numSamples; i++)
+        {
+            float sample = Math::Clamp(processingBuffer[i], -1.0f, 1.0f);
+
+            // Handle different bit depths
+            switch (aBuffer->Info.BitDepth)
+            {
+            case 8:
+            {
+                int8* dst = (int8*)processedData.Get();
+                dst[i] = (int8)(sample * 127.0f);
+                break;
+            }
+            case 16:
+            {
+                int16* dst = (int16*)processedData.Get();
+                dst[i] = (int16)(sample * 32767.0f);
+                break;
+            }
+            case 24:
+            {
+                byte* dst = processedData.Get();
+                int32 value = (int32)(sample * 8388607.0f);
+                dst[i * 3] = value & 0xFF;
+                dst[i * 3 + 1] = (value >> 8) & 0xFF;
+                dst[i * 3 + 2] = (value >> 16) & 0xFF;
+                break;
+            }
+            case 32:
+            {
+                float* dst = (float*)processedData.Get();
+                dst[i] = sample;
+                break;
+            }
+            }
+        }
+
+        // Use the processed data for the buffer
+        buffer.pAudioData = processedData.Get();
+        buffer.AudioBytes = processedData.Count();
+    }
+
+    // Handle time offset
+    if (aSource->StartTimeForQueueBuffer > ZeroTolerance)
+    {
+        // Offset start position when playing buffer with a custom time offset
+        const uint32 bytesPerSample = aBuffer->Info.BitDepth / 8 * aBuffer->Info.NumChannels;
+        buffer.PlayBegin = (UINT32)(aSource->StartTimeForQueueBuffer * aBuffer->Info.SampleRate);
+        buffer.PlayLength = (buffer.AudioBytes / bytesPerSample) - buffer.PlayBegin;
+        aSource->LastBufferStartTime = aSource->StartTimeForQueueBuffer;
+        aSource->StartTimeForQueueBuffer = 0;
+    }
+
+    // Submit buffer to XAudio2
+    const HRESULT hr = aSource->Voice->SubmitSourceBuffer(&buffer);
+    XAUDIO2_CHECK_ERROR(SubmitSourceBuffer);
+}
+
+/*
 void AudioBackendXAudio2::Source_DequeueProcessedBuffers(uint32 sourceID)
 {
     auto aSource = XAudio2::GetSource(sourceID);
@@ -634,6 +894,59 @@ void AudioBackendXAudio2::Source_DequeueProcessedBuffers(uint32 sourceID)
         const HRESULT hr = aSource->Voice->FlushSourceBuffers();
         XAUDIO2_CHECK_ERROR(FlushSourceBuffers);
         aSource->BuffersProcessed = 0;
+    }
+}
+*/
+
+void AudioBackendXAudio2::Source_DequeueProcessedBuffers(uint32 sourceID)
+{
+    auto aSource = XAudio2::GetSource(sourceID);
+    if (!aSource || !aSource->Voice)
+        return;
+
+    // Get current voice state to determine buffer status
+    XAUDIO2_VOICE_STATE state;
+    aSource->Voice->GetState(&state);
+
+    // Store the number of processed buffers from the source
+    int32 numProcessedBuffers = aSource->BuffersProcessed;
+
+    if (numProcessedBuffers > 0)
+    {
+        // We need to track which buffers were actually processed
+        // In XAudio2, we can maintain a queue of buffers per source
+        if (!BufferQueueMap.TryGet(sourceID, QueuedBuffers))
+        {
+            // Initialize empty queue if not found
+            BufferQueueMap[sourceID] = Array<uint32>();
+            QueuedBuffers = &BufferQueueMap[sourceID];
+        }
+
+        // Safety check: don't dequeue more buffers than we have queued
+        numProcessedBuffers = Math::Min(numProcessedBuffers, QueuedBuffers->Count());
+
+        // Unregister each processed buffer from our tracking system
+        BufferMapLock.Lock();
+
+        // Remove the first 'numProcessedBuffers' from the queue
+        // These are the ones that have been played and processed
+        for (int32 i = 0; i < numProcessedBuffers; i++)
+        {
+            uint32 processedBufferID = QueuedBuffers->Get()[0];
+            BufferSourceMap.Remove(processedBufferID);
+
+            // Remove from queue
+            QueuedBuffers->RemoveAt(0);
+        }
+
+        BufferMapLock.Unlock();
+
+        // Reset the processed buffers count in the source
+        aSource->BuffersProcessed = 0;
+
+        // Flush the source buffers in XAudio2
+        const HRESULT hr = aSource->Voice->FlushSourceBuffers();
+        XAUDIO2_CHECK_ERROR(FlushSourceBuffers);
     }
 }
 

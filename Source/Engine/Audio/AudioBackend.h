@@ -6,7 +6,10 @@
 #include "Types.h"
 #include "Engine/Core/Types/BaseTypes.h"
 
-class AudioEffectChain;
+#include "AudioEffectChain.h"
+
+class AudioTool;
+
 
 /// <summary>
 /// The helper class for that handles active audio backend operations.
@@ -15,6 +18,49 @@ class AudioBackend
 {
     friend AudioBackend;
     friend class AudioService;
+
+protected:
+    // Track buffer-to-source associations
+    static Dictionary<uint32, uint32> BufferSourceMap; // Maps buffer IDs to source IDs
+    static Dictionary<uint32, AudioEffectChain*> SourceEffectChains; // Maps source IDs to effect chains
+    static CriticalSection BufferMapLock; // Thread safety for the map
+    static Dictionary<uint32, Array<uint32>> BufferQueueMap; // Maps source IDs to their queued buffer sequence
+
+    // Helper inline methods to register/unregister buffer-source associations
+    static inline void RegisterBufferWithSource(uint32 bufferID, uint32 sourceID)
+    {
+        BufferMapLock.Lock();
+        BufferSourceMap[bufferID] = sourceID;
+        BufferMapLock.Unlock();
+    }
+
+    static inline void UnregisterBuffer(uint32 bufferID)
+    {
+        BufferMapLock.Lock();
+        BufferSourceMap.Remove(bufferID);
+        BufferMapLock.Unlock();
+    }
+
+    static inline uint32 GetSourceForBuffer(uint32 bufferID)
+    {
+        uint32 sourceID = 0;
+        BufferMapLock.Lock();
+        BufferSourceMap.TryGet(bufferID, sourceID);
+        BufferMapLock.Unlock();
+        return sourceID;
+    }
+
+    static inline AudioEffectChain* GetEffectChainForSource(uint32 sourceID)
+    {
+        AudioEffectChain* chain = nullptr;
+        BufferMapLock.Lock();
+        SourceEffectChains.TryGet(sourceID, chain);
+        BufferMapLock.Unlock();
+        return chain;
+    }
+
+    // Helper function for processing audio with effect chains
+    static void ProcessAudioWithEffectChain(byte* samples, byte*& processedSamples, const AudioDataInfo& info, AudioEffectChain* chain, Array<float>& processingBuffer, Array<byte>& processedData);
 
 public:
     enum class FeatureFlags
@@ -35,7 +81,16 @@ private:
 
     // Source
     virtual uint32 Source_Add(const AudioDataInfo& format, const Vector3& position, const Quaternion& orientation, float volume, float pitch, float pan, bool loop, bool spatial, float attenuation, float minDistance, float doppler) = 0;
-    virtual void Source_Remove(uint32 sourceID) = 0;
+    // virtual void Source_Remove(uint32 sourceID) = 0;
+    // Clean up when a source is removed
+    virtual void Source_Remove(uint32 sourceID)
+    {
+        BufferMapLock.Lock();
+        SourceEffectChains.Remove(sourceID);
+        BufferMapLock.Unlock();
+        // Actual implementation in derived classes
+    }
+
     virtual void Source_VelocityChanged(uint32 sourceID, const Vector3& velocity) = 0;
     virtual void Source_TransformChanged(uint32 sourceID, const Vector3& position, const Quaternion& orientation) = 0;
     virtual void Source_VolumeChanged(uint32 sourceID, float volume) = 0;
@@ -51,12 +106,33 @@ private:
     virtual void Source_SetNonStreamingBuffer(uint32 sourceID, uint32 bufferID) = 0;
     virtual void Source_GetProcessedBuffersCount(uint32 sourceID, int32& processedBuffersCount) = 0;
     virtual void Source_GetQueuedBuffersCount(uint32 sourceID, int32& queuedBuffersCount) = 0;
-    virtual void Source_QueueBuffer(uint32 sourceID, uint32 bufferID) = 0;
-    virtual void Source_DequeueProcessedBuffers(uint32 sourceID) = 0;
+
+    // virtual void Source_QueueBuffer(uint32 sourceID, uint32 bufferID) = 0;
+    virtual void Source_QueueBuffer(uint32 sourceID, uint32 bufferID)
+    {
+        RegisterBufferWithSource(bufferID, sourceID);
+        // Actual implementation in derived classes
+    }
+
+    // virtual void Source_DequeueProcessedBuffers(uint32 sourceID) = 0;
+    // When buffers are processed, update associations
+    virtual void Source_DequeueProcessedBuffers(uint32 sourceID)
+    {
+        // Derived classes need to call UnregisterBuffer for each processed buffer
+        // Actual implementation in derived classes
+    }
 
     // Buffer
     virtual uint32 Buffer_Create() = 0;
-    virtual void Buffer_Delete(uint32 bufferID) = 0;
+    
+    // virtual void Buffer_Delete(uint32 bufferID) = 0;
+    // Clean up when a buffer is deleted
+    virtual void Buffer_Delete(uint32 bufferID)
+    {
+        UnregisterBuffer(bufferID);
+        // Actual implementation in derived classes
+    }
+
     virtual void Buffer_Write(uint32 bufferID, byte* samples, const AudioDataInfo& info) = 0;
 
     // Base
@@ -70,7 +146,14 @@ private:
     virtual void Base_Dispose() = 0;
 	
 	// Effect Chain
-	virtual void Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain) = 0;
+	//virtual void Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain) = 0;
+    // Store effect chain for a source
+    virtual void Source_SetEffectChain(uint32 sourceID, AudioEffectChain* chain)
+    {
+        BufferMapLock.Lock();
+        SourceEffectChains[sourceID] = chain;
+        BufferMapLock.Unlock();
+    }
 
 public:
     virtual ~AudioBackend()
