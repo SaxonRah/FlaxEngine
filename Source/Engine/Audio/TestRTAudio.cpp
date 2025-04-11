@@ -70,14 +70,14 @@ void TestRTAudio::OnUpdate()
     if (Input::GetKeyDown(KeyboardKeys::Alpha6))
     {
         LOG(Info, "Starting SineWave test...");
-        PlaySineWave();
+        PlaySineWave(false);
         Platform::Sleep(2000);
         CleanupSineWave();
     }
 }
 
 // Create a sine wave audio clip asset
-void TestRTAudio::PlaySineWave()
+void TestRTAudio::PlaySineWave(bool applyEffect)
 {
     // Define audio parameters
     const uint32 sampleRate = 44100;
@@ -132,7 +132,7 @@ void TestRTAudio::PlaySineWave()
     AudioBackend::Source::SetNonStreamingBuffer(sourceID, bufferID);
 
     // Apply effect chain if available
-    if (_effectChain)
+    if (applyEffect)
     {
         AudioBackend::EffectChain::Set(sourceID, _effectChain);
         LOG(Info, "Applied effect chain to source ID: {0}", sourceID);
@@ -182,10 +182,14 @@ void TestRTAudio::TestWithSineWave()
         // Create effects
         _reverb = New<ReverbEffect>(params);
         _eq = New<EQEffect>(params);
+        _occlusion = New<OcclusionEffect>(params);
+        _spatializer = New<SpatializerEffect>(params);
 
-        // Add to chain - store references to prevent deletion
+        // Add them to the chain
         _effectChain->AddEffect(_reverb);
         _effectChain->AddEffect(_eq);
+        _effectChain->AddEffect(_occlusion);
+        _effectChain->AddEffect(_spatializer);
     }
 
     // Configure effects with exaggerated values
@@ -203,8 +207,24 @@ void TestRTAudio::TestWithSineWave()
         _eq->SetHighGain(0.2f);
     }
 
-    // Play the sine wave
-    PlaySineWave();
+    if (_occlusion)
+    {
+        _occlusion->SetOcclusionLevel(1.0f);
+        _occlusion->SetWetDryMix(1.0f);
+        _occlusion->UpdateParameters();
+    }
+    if (_spatializer)
+    {
+        _spatializer->SetListenerPosition(Vector3(0, 0, 0));
+        _spatializer->SetListenerOrientation(Quaternion(0, 0, 0, 0));
+        _spatializer->SetSourcePosition(Vector3(0, 0, 0));
+        _spatializer->SetSourceRadius(1024.0f);
+        _spatializer->SetReverbMix(0.9f);
+        _spatializer->SetWetDryMix(0.9f);
+    }
+
+    // Play the sine wave with effect
+    PlaySineWave(true);
 
     // Wait for 2 seconds to hear the effect
     Platform::Sleep(2000);
@@ -370,8 +390,8 @@ void TestRTAudio::TestWithRealAudio()
     }
 
     // Create effect chain only if not created yet
-    if (!_effectChain)
-    {
+    // if (!_effectChain)
+    // {
         SpawnParams params(Guid::New(), AudioEffectChain::TypeInitializer);
         _effectChain = New<AudioEffectChain>(params);
 
@@ -386,7 +406,7 @@ void TestRTAudio::TestWithRealAudio()
         _effectChain->AddEffect(_eq);
         _effectChain->AddEffect(_occlusion);
         _effectChain->AddEffect(_spatializer);
-    }
+    // }
 
     // -------------------------------------------------------------------------
     // 1. Set up REVERB effect based on acoustic analysis

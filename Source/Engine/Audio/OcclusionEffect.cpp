@@ -4,11 +4,34 @@
 
 void OcclusionEffect::Process(const float* inputBuffer, float* outputBuffer, uint32 numSamples, const AudioDataInfo& format)
 {
+
     static bool logged = false;
     if (!logged) {
-        LOG(Info, "Processing OcclusionEffect with {0} samples", numSamples);
+        LOG(Info, "Effect {0} processing {1} samples, wet/dry = {2}",
+            GetType().ToString(), numSamples, GetWetDryMix());
+
+        // Log the first few samples for debugging
+        String inputSamplesStr;
+        String outputSamplesStr;
+        for (uint32 i = 0; i < Math::Min(10u, numSamples); i++) {
+            inputSamplesStr += String::Format(TEXT("{0:.3f} "), inputBuffer[i]);
+        }
+
+        // Process a few samples
+        const float wetMix = GetWetDryMix();
+        const float dryMix = 1.0f - wetMix;
+        for (uint32 i = 0; i < Math::Min(10u, numSamples); i++) {
+            // Example processing (modify based on your actual effect)
+            outputBuffer[i] = inputBuffer[i] * dryMix + (inputBuffer[i] * 0.5f) * wetMix;
+            outputSamplesStr += String::Format(TEXT("{0:.3f} "), outputBuffer[i]);
+        }
+
+        LOG(Info, "Input samples: {0}", inputSamplesStr);
+        LOG(Info, "Output samples: {0}", outputSamplesStr);
+
         logged = true;
     }
+
     const float wetMix = GetWetDryMix();
     const float dryMix = 1.0f - wetMix;
     

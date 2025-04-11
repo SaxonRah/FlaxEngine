@@ -41,7 +41,7 @@ public:
 
     /// PlaySineWave
     API_FUNCTION()
-    void PlaySineWave();
+    void PlaySineWave(bool applyEffect);
 
     /// CleanupSineWave
     API_FUNCTION()
