@@ -1,5 +1,6 @@
 // SpatializerEffect.cpp
 #include "SpatializerEffect.h"
+#include "Engine/Core/Log.h"
 
 void SpatializerEffect::UpdateEarParameters()
 {
@@ -81,6 +82,12 @@ void SpatializerEffect::ProcessChannel(const float* input, float* output, uint32
 
 void SpatializerEffect::Process(const float* inputBuffer, float* outputBuffer, uint32 numSamples, const AudioDataInfo& format)
 {
+    static bool logged = false;
+    if (!logged) {
+        LOG(Info, "Processing SpatializerEffect with {0} samples", numSamples);
+        logged = true;
+    }
+
     const float wetMix = GetWetDryMix();
     const float dryMix = 1.0f - wetMix;
     

@@ -589,7 +589,8 @@ void AudioSource::SetEffectChain(AudioEffectChain* value)
 {
     if (_effectChain == value)
         return;
-    
+
+    LOG(Info, "Setting effect chain {0} for source {1}", (uint64)value, SourceID);
     _effectChain = value;
     
     if (SourceID)

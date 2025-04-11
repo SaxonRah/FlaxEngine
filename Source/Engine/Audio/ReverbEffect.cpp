@@ -1,5 +1,6 @@
 // ReverbEffect.cpp
 #include "ReverbEffect.h"
+#include "Engine/Core/Log.h"
 
 void ReverbEffect::OnParamsChanged()
 {
@@ -19,6 +20,11 @@ void ReverbEffect::OnParamsChanged()
 
 void ReverbEffect::Process(const float* inputBuffer, float* outputBuffer, uint32 numSamples, const AudioDataInfo& format)
 {
+    static bool logged = false;
+    if (!logged) {
+        LOG(Info, "Processing ReverbEffect with {0} samples", numSamples);
+        logged = true;
+    }
     const float wetMix = GetWetDryMix();
     const float dryMix = 1.0f - wetMix;
     

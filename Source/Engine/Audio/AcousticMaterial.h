@@ -185,5 +185,5 @@ public:
     API_PROPERTY() void SetMaterialType(AcousticMaterialType value);
 
 private:
-    AcousticMaterialType _materialType = (AcousticMaterialType)0;
+    AcousticMaterialType _materialType;
 };

@@ -1,8 +1,14 @@
 // EQEffect.cpp
 #include "EQEffect.h"
+#include "Engine/Core/Log.h"
 
 void EQEffect::Process(const float* inputBuffer, float* outputBuffer, uint32 numSamples, const AudioDataInfo& format)
 {
+    static bool logged = false;
+    if (!logged) {
+        LOG(Info, "Processing EQEffect with {0} samples", numSamples);
+        logged = true;
+    }
     const float wetMix = GetWetDryMix();
     const float dryMix = 1.0f - wetMix;
     

@@ -11,6 +11,7 @@ AcousticMaterial::AcousticMaterial(const SpawnParams& params)
     , _midFreqAbsorption(0.5f)
     , _highFreqAbsorption(0.8f)
 {
+    SetMaterialType(GetMaterialType());
 }
 
 void AcousticMaterial::SetMaterialType(AcousticMaterialType value)
